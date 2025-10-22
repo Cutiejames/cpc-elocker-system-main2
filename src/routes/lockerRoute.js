@@ -7,4 +7,5 @@ const authenticateToken = require('../middleware/authentication');
 // get all lockers with optional status filter
 router.get('/lockers', authenticateToken, getAllLockers);
 
+
 module.exports = router;

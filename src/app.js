@@ -7,8 +7,7 @@ const app = express();
 
 app.use(cors({
   origin: "http://localhost:8080",   // your frontend url
-  credentials: true,                  // allow cookies/tokens
-  exposedHeaders: ['Content-Type']
+  credentials: true                  // allow cookies/tokens
 }));
 app.use(express.json());
 app.use(bodyParser.json());
@@ -30,9 +29,8 @@ app.use('/', usersRouter);
 const lockerRouter = require('./routes/lockerRoute');
 app.use('/locker', lockerRouter);
 
-const profilePicture = require('./routes/profilePicture');
-app.use('/', profilePicture);
-
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'src', 'uploads')));
 
 module.exports = app;
+
+app.use(express.json());

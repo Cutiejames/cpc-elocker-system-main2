@@ -21,11 +21,11 @@ const loginUser = async (req, res) => {
     }
       const user = rows[0];
 
-      // 🚨 check if account is disabled
-      if (user.status === 'disable') {
-        return res.status(403).json({ error: 'Your account has been disabled. Please go to admin workplace.' });
-      }
-      
+     // check if account is disabled
+    if (user.status === 'disabled') {
+      return res.status(403).json({ error: 'Account is disabled. Contact admin.' });
+    }
+
       const isMatch = await bcrypt.compare(password, user.hashedPassword);
 
       if(!isMatch){

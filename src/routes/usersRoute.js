@@ -1,10 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const upload = multer();
-// const fileType = require('file-type');
-// const connection = require('../database/connection');
-// const userProfile = require('../actions/userProfile');
+const connection = require('../database/connection');
 
 // =================== middleware ===================
 const authenticateToken = require('../middleware/authentication');
@@ -41,7 +37,7 @@ const getReservationStats = require('../actions/getReservationStats');
 const getDashboardSummary  = require('../actions/getDashboardSummary');
 const downloadDashboardReport = require('../actions/downloadDashboardReport');
 const { getAllCourses, addCourse, getStudentsByCourse } = require('../actions/getAllUsers');
-const { disableUserAccount, enableUserAccount } = require('../actions/userAccountStatus');
+const { disableUserAccount, enableUserAccount, resetUserPassword } = require('../actions/userAccountStatus');
 const { getAuditLogs } = require('../actions/auditlog');
 
 // =================== tenant ===================
@@ -51,7 +47,7 @@ const loginUser = require('../actions/login');
 // const changePassword = require('../actions/changePassword');
 
 // =================== upload profile pic ===================
-const uploads = require('../middleware/upload');
+const upload = require('../middleware/upload');
 const uploadProfilePic = require('../actions/upload');
 const authentication = require('../middleware/authentication');
 
@@ -60,7 +56,7 @@ router.post('/login', async(req, res) => {
     await loginUser(req, res);
 });
 router.post('/locker/transaction', authenticateToken, lockerCtrl.lockerTransaction);
-router.post('/locker/payments', authenticateToken, uploads.single('receipt'), lockerCtrl.recordPayment);
+router.post('/locker/payments', authenticateToken, upload.single('receipt'), lockerCtrl.recordPayment);
 router.post('/locker/payments/:payment_id/verify', authenticateToken, authorizeAdmin, lockerCtrl.verifyPayment);
 router.get('/locker/rentals/:rental_id/payments', authenticateToken, lockerCtrl.getPaymentsForRental);
 router.get('/tickets/:ticket_id/messages', authenticateToken, getTicketMessages);
@@ -70,7 +66,33 @@ router.post("/settings/update-password", authentication, changePassword);
 
 // =================== admin routes ===================
 router.post('/create-user', authenticateToken, authorizeAdmin, createUser);
-router.post('/reset-password', authenticateToken, authorizeAdmin, forgotPassword);
+const bcrypt = require('bcrypt');
+
+router.post('/users/reset-password', authenticateToken, authorizeAdmin, async (req, res) => {
+  try {
+    const { user_id, new_password } = req.body;
+
+    if (!user_id || !new_password) {
+      return res.status(400).json({ error: "User ID and new password are required." });
+    }
+
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+
+    await connection.query(
+      `UPDATE accounts 
+       JOIN users ON users.account_id = accounts.account_id
+       SET accounts.password = ?
+       WHERE users.user_id = ?`,
+      [hashedPassword, user_id]
+    );
+
+    res.json({ message: "Password reset successfully!" });
+  } catch (error) {
+    console.error("Error resetting password:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
 router.get('/dashboard', authenticateToken, authorizeAdmin, getAdminDashboard);
 router.post('/add-locker', authenticateToken, authorizeAdmin, addLocker);
 router.post('/approve-rental', authenticateToken, authorizeAdmin, approveRental);
@@ -92,8 +114,7 @@ router.get('/courses/:course_id/students', authenticateToken, authorizeAdmin, ge
 router.put('/users/:user_id/disable', authenticateToken, authorizeAdmin, disableUserAccount);
 router.put('/users/:user_id/enable', authenticateToken, authorizeAdmin, enableUserAccount);
 router.get('/audit-logs', authenticateToken, authorizeAdmin, getAuditLogs);
-
-
+router.get("/students", authenticateToken, authorizeAdmin, getStudentsByCourse);
 
 // =================== tenant routes ===================
 router.post('/create-account', async(req, res) => 
@@ -124,34 +145,7 @@ router.put('/notifications/:notif_id/read', authenticateToken, markAsRead);
 router.put('/notifications/read-all', authenticateToken, markAllAsRead);
 
 // =================== upload profile picture routes ===================
-router.post(
-  '/upload-profile-pic',
-  authenticateToken,
-  upload.single('profile_pic'),
-  uploadProfilePic
-);
-
-// ✅ get profile picture (display from db)
-// GET profile picture by user_id
-// router.get('/profile-pic/:user_id', (req, res) => {
-//   const userId = req.params.user_id;
-//   const query = 'SELECT profile_pic FROM users WHERE user_id = ?';
-
-//   connection.query(query, [userId], (err, results) => {
-//     if (err) {
-//       console.error('Error fetching profile picture:', err);
-//       return res.status(500).json({ error: 'Database error' });
-//     }
-
-//     if (!results.length || !results[0].profile_pic) {
-//       return res.status(404).json({ error: 'Profile picture not found' });
-//     }
-
-//     const img = results[0].profile_pic;
-//     res.writeHead(200, { 'Content-Type': 'image/jpeg' });
-//     res.end(img, 'binary');
-//   });
-// });
+router.post('/upload-profile-pic', authenticateToken, upload.single('profile_pic'), uploadProfilePic);
 
 // const bcrypt = require('bcrypt');
 // bcrypt.hash('admin123', 10).then(console.log);

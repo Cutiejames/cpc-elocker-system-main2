@@ -8,12 +8,11 @@ const getUserSettings = async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT
-        u.user_id,
+      SELECT 
         u.stud_id AS student_id,
         u.f_name AS first_name,
         u.l_name AS last_name,
-        u.profile_pic,
+        u.profile_pic AS profile_picture,
         c.course_name AS course,
         a.username,
         a.role
@@ -31,8 +30,8 @@ const getUserSettings = async (req, res) => {
 
     // build profile pic url if exists
     const user = rows[0];
-    if (user.profile_pic) {
-      user.profile_pic_url = `${req.protocol}://${req.get('host')}/profile-pic/${user.user_id}`;
+    if (user.profile_picture) {
+      user.profile_pic_url = `/uploads/profile_pics/${user.profile_picture}`;
     } else {
       user.profile_pic_url = null;
     }
