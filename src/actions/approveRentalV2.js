@@ -157,7 +157,7 @@ const cancelRental = async (req, res) => {
       `SELECT lr.*, l.locker_number AS locker_name 
        FROM locker_rentals lr
        JOIN lockers l ON lr.locker_id = l.locker_id
-       WHERE lr.rental_id = ? AND lr.status = "pending"`,
+       WHERE lr.rental_id = ? AND lr.status IN ('pending', 'Pending', 'PENDING')`,
       [rental_id]
     );
 
