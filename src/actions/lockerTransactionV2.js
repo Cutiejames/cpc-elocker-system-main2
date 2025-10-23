@@ -128,6 +128,9 @@ const lockerTransaction = async (req, res) => {
         [locker_id, targetUserId, months, months, total, paid, balance, payment_method, rentStatus, 'rent']
       );
 
+      // get rental id
+      const rentalId = insertRental.insertId;
+
       await logActivity(user_id, adminName, `assigned locker ${lockerName} to ${studentName}`);
 
       // ✅ generate qr if admin chose qr method
@@ -140,6 +143,7 @@ const lockerTransaction = async (req, res) => {
           message: `locker assigned successfully. scan qr below to pay.`,
           qr_download: `/uploads/qrs/${fileName}`,
           amount_due: paid,
+          rental_id: rentalId,
         });
       }
 
@@ -164,6 +168,43 @@ const lockerTransaction = async (req, res) => {
     if (locker.status === 'rented')
       return res.status(400).json({ error: 'locker already rented.' });
 
+    // ✅ student RESERVE logic
+  if (action_type === 'reserve') {
+    // prevent multiple reservations by same student
+    const [existing] = await connection.query(
+      `SELECT COUNT(*) AS count FROM locker_rentals 
+      WHERE user_id = ? AND status IN ('reserved', 'pending', 'active')`,
+      [user_id]
+    );
+
+    if (existing[0].count >= 2)
+      return res.status(400).json({ error: 'you reached locker limit (2)' });
+    
+    // mark locker as reserved for 2 days
+    await connection.query(
+      `UPDATE lockers 
+       SET status='reserved',
+           assigned_to=?,
+           reserved_date=NOW(),
+           reserve_expiry=DATE_ADD(NOW(), INTERVAL 2 DAY)
+       WHERE locker_id=?`,
+      [user_id, locker_id]
+    );
+
+    // record reservation (no months/payment yet)
+    await connection.query(
+      `INSERT INTO locker_rentals 
+       (locker_id, user_id, months, start_date, due_date, total_amount, paid_amount, balance, payment_method, status, action_type)
+       VALUES (?, ?, 0, NOW(), DATE_ADD(NOW(), INTERVAL 2 DAY), 0, 0, 0, 'cash', 'reserved', 'reserve')`,
+      [locker_id, user_id]
+    );
+
+    return res.status(200).json({
+      message:
+        'locker reserved successfully. please visit the ssg office within 2 days to finalize your rental.',
+    });
+  }
+
     const total = months * RATE_PER_MONTH;
     const paid = (paid_months || 0) * RATE_PER_MONTH;
     const balance = total - paid;
@@ -177,11 +218,14 @@ const lockerTransaction = async (req, res) => {
       [lockerStatus, user_id, months, locker_id]
     );
 
-    await connection.query(
-      `INSERT INTO locker_rentals (locker_id,user_id,months,start_date,due_date,total_amount,paid_amount,balance,payment_method,status,action_type)
-       VALUES (?,?,?,NOW(),DATE_ADD(NOW(),INTERVAL ? MONTH),?,?,?,?,?,?)`,
-      [locker_id, user_id, months, months, total, paid, balance, payment_method, rentStatus, action_type]
-    );
+    const [insertResult] = await connection.query(
+  `INSERT INTO locker_rentals (locker_id,user_id,months,start_date,due_date,total_amount,paid_amount,balance,payment_method,status,action_type)
+   VALUES (?,?,?,NOW(),DATE_ADD(NOW(),INTERVAL ? MONTH),?,?,?,?,?,?)`,
+  [locker_id, user_id, months, months, total, paid, balance, payment_method, rentStatus, action_type]
+);
+
+const rentalId = insertResult.insertId; // ✅ get new rental id
+
 
     // ✅ qr generation for student if payment_method is qr
     if (payment_method === 'qr') {
@@ -193,6 +237,7 @@ const lockerTransaction = async (req, res) => {
         message: 'locker rental created. scan qr below to pay via gcash.',
         qr_download: `/uploads/qrs/${fileName}`,
         amount_due: paid,
+        rental_id: rentalId,
       });
     }
 
@@ -206,15 +251,17 @@ const lockerTransaction = async (req, res) => {
 };
 
 // student uploads payment receipt (auto amount = same as rental paid_amount, no manual input)
+// student uploads payment receipt (store image in database as base64 blob)
 const recordPayment = async (req, res) => {
   try {
-    const rental_id = req.body?.rental_id;
-    const receipt = req.file ? req.file.filename : null;
-
+    const { rental_id, receipt, amount_paid_now } = req.body;
     if (!rental_id) return res.status(400).json({ error: 'rental_id is required' });
-    if (!receipt) return res.status(400).json({ error: 'please upload a payment receipt image' });
+    if (!receipt) return res.status(400).json({ error: 'receipt (base64) is required' });
 
-    // get rental + user info
+    // convert base64 string to buffer for longblob
+    const receiptBuffer = Buffer.from(receipt, 'base64');
+
+    // get rental info
     const [rentalRows] = await connection.query(
       `
       SELECT lr.months, lr.total_amount, lr.paid_amount, lr.balance, lr.locker_id,
@@ -227,30 +274,33 @@ const recordPayment = async (req, res) => {
     );
 
     if (rentalRows.length === 0) return res.status(404).json({ error: 'rental not found' });
+
     const rental = rentalRows[0];
 
     if (rental.balance <= 0)
       return res.status(400).json({ error: 'no remaining balance to pay' });
 
-    // auto-set amount equal to the currently paid amount from rentals table
-    const expectedAmount = rental.paid_amount;
+   // ✅ determine payment amount now
+    const currentPayment = parseFloat(amount_paid_now) || 0;
+    if (currentPayment <= 0)
+      return res.status(400).json({ error: 'invalid payment amount' });
 
-    // insert payment record (unverified)
+    // insert into locker_payments with blob receipt
     const [insertResult] = await connection.query(
       `
       INSERT INTO locker_payments
-        (rental_id, user_id, amount_paid, confirmed_amount, payment_method, payment_date, remarks, receipt_path, verified, verified_at)
+        (rental_id, user_id, amount_paid, confirmed_amount, payment_method,
+         payment_date, remarks, receipt_path, verified, verified_at)
       VALUES (?, ?, ?, 0.00, 'qr', NOW(), 'receipt uploaded - pending verification', ?, 0, NOW())
       `,
-      [rental_id, rental.user_id, expectedAmount, receipt]
+      [rental_id, rental.user_id, currentPayment, receiptBuffer]
     );
 
     res.status(200).json({
-      message: `payment receipt uploaded successfully for ₱${expectedAmount.toFixed(2)}, awaiting admin verification`,
+      message: `payment receipt uploaded successfully for ₱${currentPayment.toFixed(2)}, awaiting admin verification`,
       payment_id: insertResult.insertId,
-      expected_amount: expectedAmount,
+      expected_amount: currentPayment,
       student_name: `${rental.f_name} ${rental.m_name ? rental.m_name + ' ' : ''}${rental.l_name}`,
-      receipt_filename: receipt,
     });
   } catch (error) {
     console.error('error recording payment:', error);
